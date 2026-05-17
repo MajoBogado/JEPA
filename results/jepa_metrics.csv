@@ -1,0 +1,2 @@
+model,auc_roc,accuracy,f1,sensitivity,specificity,true_positives,false_positives,true_negatives,false_negatives
+jepa,0.6051136363636364,0.6744186046511628,0.46153846153846156,0.5454545454545454,0.71875,6,9,23,5

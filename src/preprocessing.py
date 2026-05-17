@@ -8,7 +8,7 @@ Covers:
 - Feature engineering: delta features V1 -> V2
 - Ground truth label: CDR worsened at ANY visit after visit 2
 - Stratified train/test split (120 train / 30 test)
-- Save processed files to data/processed/ - those will later be used to train and test models.
+- Save processed files to data/processed/
 """
 
 from pathlib import Path
@@ -99,19 +99,17 @@ def build_participant_feature_row(
 
 
 def build_ground_truth_label(
-    subject_id: str,
     subject_visits: pd.DataFrame,
     visit_2_cdr: float,
-) -> int:
+) -> int | None:
     """
-    Returns 1 if CDR worsened at ANY visit after visit 2, 0 otherwise.
-    We check all subsequent visits, not just the next one.
+    Returns 1 if CDR worsened at ANY visit after visit 2, 0 if stable.
+    Returns None if there are no visits after visit 2 — these participants
+    are excluded from the dataset entirely since there is nothing to predict.
     """
     visits_after_cutoff = subject_visits[subject_visits["Visit"] > 2]
     if visits_after_cutoff.empty:
-        # Participant only has 2 visits — compare visit 2 CDR to visit 1 CDR
-        visit_1_cdr = subject_visits[subject_visits["Visit"] == 1].iloc[0]["CDR"]
-        return int(visit_2_cdr > visit_1_cdr)
+        return None
 
     max_cdr_after_cutoff = visits_after_cutoff["CDR"].max()
     return int(max_cdr_after_cutoff > visit_2_cdr)
@@ -152,18 +150,22 @@ def engineer_features_and_labels(oasis_imputed: pd.DataFrame) -> pd.DataFrame:
             participant_group=participant_group,
         )
 
-        feature_row["cdr_worsened_after_v2"] = build_ground_truth_label(
-            subject_id=subject_id,
+        ground_truth_label = build_ground_truth_label(
             subject_visits=subject_visits_sorted,
             visit_2_cdr=visit_2_row["CDR"],
         )
 
+        if ground_truth_label is None:
+            excluded_count += 1
+            continue
+
+        feature_row["cdr_worsened_after_v2"] = ground_truth_label
         feature_rows.append(feature_row)
 
     participant_features_df = pd.DataFrame(feature_rows)
     print(f"[preprocessing] Feature engineering complete.")
-    print(f"  Participants included : {len(participant_features_df)}")
-    print(f"  Participants excluded (< 2 visits) : {excluded_count}")
+    print(f"  Participants included  : {len(participant_features_df)}")
+    print(f"  Excluded (< 2 visits)  : {excluded_count} (no valid ground truth — nothing to predict)")
     print(f"  CDR worsened (label=1) : {participant_features_df['cdr_worsened_after_v2'].sum()}")
     print(f"  CDR stable   (label=0) : {(participant_features_df['cdr_worsened_after_v2'] == 0).sum()}")
     return participant_features_df
@@ -173,15 +175,32 @@ def engineer_features_and_labels(oasis_imputed: pd.DataFrame) -> pd.DataFrame:
 
 def split_train_test(participant_features_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Stratified 80/20 split on participant group to preserve class proportions.
+    Stratified 80/20 split preserving group proportions.
+    Real participants with positive labels are forced into the test set
+    to ensure at least some genuine clinical cases appear in evaluation.
     Returns (train_df, test_df).
     """
-    train_df, test_df = train_test_split(
-        participant_features_df,
+    # Force real positive cases into test set — there are only 3 and the
+    # stratified split sent all of them to train by chance
+    real_positive_mask = (
+        ~participant_features_df["subject_id"].str.startswith("SYN") &
+        (participant_features_df["cdr_worsened_after_v2"] == 1)
+    )
+    forced_test_df = participant_features_df[real_positive_mask]
+    remaining_df = participant_features_df[~real_positive_mask]
+
+    print(f"[preprocessing] Forcing {len(forced_test_df)} real positive participants into test set.")
+
+    # Stratified split on the remaining participants
+    remaining_train_df, remaining_test_df = train_test_split(
+        remaining_df,
         test_size=0.2,
         random_state=RANDOM_SEED,
-        stratify=participant_features_df["participant_group"],
+        stratify=remaining_df["participant_group"],
     )
+
+    test_df = pd.concat([forced_test_df, remaining_test_df], ignore_index=True)
+    train_df = remaining_train_df.reset_index(drop=True)
 
     print(f"\n[preprocessing] Train/test split complete.")
     print(f"  Train : {len(train_df)} participants")
