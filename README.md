@@ -1,4 +1,4 @@
-# JEPA vs LLM — Longitudinal Clinical Trial Prediction
+# Longitudinal Clinical Trial Prediction: Comparing LLM, XGBoost and a JEPA-inspired Architecture
 
 A hands-on exercise comparing three fundamentally different approaches to longitudinal patient outcome prediction — built to understand how trajectory-based architectures differ structurally from language models and traditional machine learning.
 
